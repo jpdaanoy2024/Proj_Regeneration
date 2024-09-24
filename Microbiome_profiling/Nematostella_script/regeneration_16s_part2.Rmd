@@ -1,0 +1,231 @@
+---
+title: "regeneration_16s_part3"
+output: html_document
+date: "2024-07-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup
+```{r,}
+# Setup
+## Packages
+library(ggplot2)
+library(cowplot)
+library(phyloseq)
+library(car)
+library(ggpubr)
+library(vegan)
+#nBiocManager::install("dada2")
+
+library(dada2)
+library(tidyverse)
+```
+
+
+```{r making phyloseq objects, eval=FALSE,}
+# can skip this section once you've run it once and saved output Rdata files
+setwd("/projectnb/coral/jk_data/proj4_Regeneration/1_Raw_reads/Stella/")
+load("taxa2.Rdata")
+
+#cleaned, rarefied files:
+ps.rare.1k = readRDS("phyloseq.rarefied.rds")
+seqtab.rare.1k <- data.frame(ps.rare.1k@otu_table)
+samdf.rare.1k <- data.frame(ps.rare.1k@sam_data)
+
+
+ps.rare <- phyloseq(otu_table(seqtab.rare.1k, taxa_are_rows=FALSE), 
+                    sample_data(samdf.rare.1k), 
+                    tax_table(taxa2))
+ps.rare 
+# 100 taxa and 9 samples 
+
+save(ps.rare,file="ps.rare.Rdata")
+
+#cleaned, unrarefied files:
+ps.clean = readRDS("phyloseq.cleanest.all.rds")
+seqtab.clean <- data.frame(ps.clean@otu_table)
+samdf.clean <- data.frame(ps.clean@sam_data)
+
+ps.clean <- phyloseq(otu_table(seqtab.clean, taxa_are_rows=FALSE), 
+                    sample_data(samdf.clean), 
+                    tax_table(taxa2))
+ps.clean#[ 118 taxa and 9 samples ]
+
+
+save(ps.clean,file="ps.clean.Rdata")
+
+##TRIMMED VERSIONS:
+# trimmed and rarefied
+ps.trim.rare = readRDS("phyloseq.trim.rarefied.1k.rds")
+seqtab.trim.rare <- data.frame(ps.trim.rare@otu_table)
+samdf.trim.rare <- data.frame(ps.trim.rare@sam_data)
+
+ps.trim.rare <- phyloseq(otu_table(seqtab.trim.rare, taxa_are_rows=FALSE), 
+                    sample_data(samdf.trim.rare), 
+                    tax_table(taxa2))
+ps.trim.rare# 92 taxa and 9 sampless
+
+save(ps.trim.rare,file="ps.trim.rare.Rdata")
+
+# just trimmed
+ps.trim = readRDS("phyloseq.cleanest.trim.rds")
+seqtab.trim <- data.frame(ps.trim@otu_table)
+samdf.trim <- data.frame(ps.trim@sam_data)
+
+ps.trim <- phyloseq(otu_table(seqtab.trim, taxa_are_rows=FALSE), 
+                    sample_data(samdf.trim), 
+                    tax_table(taxa2))
+ps.trim#99 taxa and 9 samples
+
+save(ps.trim,file="ps.trim.Rdata")
+```
+
+
+```{r generate diversity metrics,}
+# Diversity
+##[Notes from phyloseq author](https://rdrr.io/bioc/phyloseq/man/estimate_richness.html)
+#Visualize alpha-diversity - Should be done on raw, untrimmed dataset
+df <- data.frame(estimate_richness(ps.clean, split=TRUE, measures=c("Shannon","InvSimpson","Observed")))
+samdf.clean <- data.frame(ps.clean@sam_data)
+
+df$sample <- rownames(df)
+df.div <- merge(df,samdf.clean,by="sample") #add sample data
+
+#shannon diversity divided by species richness
+df.div$even <- df.div$Shannon/(log(df.div$Observed))
+
+str(df.div)
+df.div$treatment = as.factor(df.div$treatment)
+```
+
+
+```{r shannon lineage,}
+## Alpha metrics {.tabset}
+
+#Looking at everything individually, more of a synthesis below
+#Alpha diversity is within-sample diversity. Beta diversity, on the other hand, is a measure of similarity #or dissimilarity between populations/groups. 
+
+# Ensure the 'treatment' column in df.div has the desired order
+df.div$treatment <- factor(df.div$treatment, levels = c("Control", "Antibiotic"))
+### Shannon
+#Shannon diversity estimates species diversity, considers number of species (richness) #and their relative #abundance (evenness)
+colvec<- c("Control" = "#4292c6", "Antibiotic" = "coral1")
+
+
+shan<-ggplot(df.div, aes(x=treatment, y=Shannon,fill=treatment,group=treatment))+
+  geom_boxplot(outlier.shape=NA, alpha=0.8)+
+  scale_fill_manual(values=colvec)+
+  scale_color_manual(values=colvec)+
+  geom_jitter(aes(col = treatment),size=1.5,width = 0.15, alpha=.6)+
+  xlab("Treatment")+
+  ylab("Shannon index")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),legend.position = "none") 
+shan
+```
+
+```{r shannon stats,}
+#Shannon
+shapiro.test(df.div$Shannon) #
+leveneTest(df.div$Shannon~treatment,data=df.div) #fine
+
+a.div <- aov(Shannon~treatment,data=df.div)
+summary(a.div) 
+# Df Sum Sq Mean Sq F value Pr(>F)  
+#treatment    1 0.4607  0.4607    10.1 0.0155 *
+#Residuals    7 0.3194  0.0456           
+
+#Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+```
+
+```{r simpson,}
+### Simpson
+#Simpson index considered more of a dominance index, accounts for proportion of species in a sample.
+inv<-ggplot(df.div, aes(x=treatment, y=InvSimpson,fill=treatment,group=treatment))+
+  geom_boxplot(outlier.shape=NA, alpha=0.8)+
+  scale_fill_manual(values=colvec)+
+  scale_color_manual(values=colvec)+
+  geom_jitter(aes(col = treatment),size=1.5,width = 0.15, alpha=.6)+
+  xlab("Treatment")+
+  ylab("Inverse Simpson Index")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),legend.position = "none") 
+inv
+```
+
+```{r}
+#simpson
+shapiro.test(df.div$InvSimpson) #fine
+leveneTest(df.div$InvSimpson~treatment,data=df.div) #fine 
+
+a.div <- aov(InvSimpson~treatment,data=df.div)
+summary(a.div) 
+#  Df Sum Sq Mean Sq F value  Pr(>F)   
+#treatment    1  9.333   9.333   15.18 0.00593 **
+#Residuals    7  4.305   0.615        
+```
+
+
+
+```{r,}
+### Richness
+rich<-ggplot(df.div, aes(x=treatment, y=Observed,fill=treatment,group=treatment))+
+  geom_boxplot(outlier.shape=NA, alpha=0.8)+
+  scale_fill_manual(values=colvec)+
+  scale_color_manual(values=colvec)+
+  geom_jitter(aes(col = treatment),size=1.5,width = 0.15, alpha=.6)+
+  xlab("Treatment")+
+  ylab("ASV richness")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),legend.position = "none")
+rich
+```
+
+```{r richness stats,}
+#otu richness
+shapiro.test(df.div$Observed) #fine
+leveneTest(df.div$Observed~treatment,data=df.div) #fine
+
+a.div <- aov(Observed~treatment,data=df.div)
+summary(a.div) 
+#Df Sum Sq Mean Sq F value Pr(>F)  
+#treatment    1  696.2   696.2    10.2 0.0152 *
+#Residuals    7  477.8    68.3            
+
+```
+```{r evenness,}
+even<-ggplot(df.div, aes(x=treatment, y=even,fill=treatment,group=treatment))+
+  geom_boxplot(outlier.shape=NA, alpha=0.8)+
+  scale_fill_manual(values=colvec)+
+  scale_color_manual(values=colvec)+
+  geom_jitter(aes(col = treatment),size=1.5,width = 0.15, alpha=.6)+
+  xlab("Treatment")+
+  xlab("Treatment")+
+  ylab("Evenness")+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),legend.position = "none")
+even
+
+```
+```{r}
+#evenness
+shapiro.test(df.div$even) #good
+leveneTest(df.div$even~treatment,data=df.div) #fine
+
+a.div <- aov(even~treatment,data=df.div)
+summary(a.div) 
+# Df   Sum Sq  Mean Sq F value Pr(>F)
+#treatment    1 0.005328 0.005328   3.256  0.114
+#Residuals    7 0.011453 0.001636  
+```
+
+
+```{r all plot}
+plots.lin = ggarrange(shan,inv,even,rich, ncol=4, nrow=1)
+#only richness is sig p< 0.05
+ggsave(plots.lin, filename = "Stella_diversity_plots_lineage_clean_nolabs.pdf", width=5,height=2, units=c("in"), useDingbats=FALSE)
+```
