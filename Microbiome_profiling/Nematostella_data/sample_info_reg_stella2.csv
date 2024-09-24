@@ -1,0 +1,12 @@
+﻿sample,treatment,organism
+NC1,Control,Stella
+NC2,Control,Stella
+NC3,Control,Stella
+NC4,Control,Stella
+NEG,blank_control,blank_control
+NEG2,blank_control,blank_control
+NT1,Antibiotic,Stella
+NT2,Antibiotic,Stella
+NT3,Antibiotic,Stella
+NT4,Antibiotic,Stella
+NT5,Antibiotic,Stella
