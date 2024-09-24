@@ -1,0 +1,643 @@
+---
+title: "Aip_part3"
+output: html_document
+date: "2024-07-15"
+---
+---
+title: "regeneration_16s_part3"
+output: html_document
+date: "2024-07-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Setup
+
+```{r packages composition}
+library(rlang)
+library(stringr)
+library(dplyr)
+library(stats)
+library(ggpubr)
+library(vegan)
+library(cowplot)
+library(tidyverse)
+#library(MCMC.OTU)
+#install.packages("remotes")
+#remotes::install_github("Jtrachsel/funfuns")
+library(phyloseq)
+setwd("/projectnb/coral/jk_data/proj4_Regeneration/1_Raw_reads/Aip/")
+```
+
+Read in data
+
+```{r read in data}
+load("taxa2.Rdata")
+
+#phyloseq objects
+load("ps.clean.Rdata")
+load("ps.rare.Rdata")
+load("ps.trim.rare.Rdata") # rare otu's trimmed, then rarefied (1k)
+
+# remove treatment NA's
+ps.clean <- subset_samples(ps.clean,(!is.na(treatment)))
+ps.rare <- subset_samples(ps.rare,(!is.na(treatment)))
+ps.trim.rare <- subset_samples(ps.trim.rare,(!is.na(treatment)))
+
+
+# moving forward with rarefied data, doesn't seem to make a difference in the results whether rare OTUs trimmed or not 
+
+# make the factors of interest actual factors 
+sample_data(ps.rare)$treatment = as.factor(sample_data(ps.rare)$treatment)
+#levels(sample_data(ps.rare)$treatment)
+# "Antibiotic" "Control"   
+
+
+# set color palettes
+colvec<- c("Control" = "#4292c6", "Antibiotic" = "coral1")
+```
+
+Rename ASVs to be more informative
+
+```{r rename ASVs}
+tax <- as.data.frame(ps.rare@tax_table@.Data)
+
+tax.clean <- data.frame(row.names = row.names(tax),
+                        Kingdom = str_replace(tax[,1], "D_0__",""),
+                        Phylum = str_replace(tax[,2], "D_1__",""),
+                        Class = str_replace(tax[,3], "D_2__",""),
+                        Order = str_replace(tax[,4], "D_3__",""),
+                        Family = str_replace(tax[,5], "D_4__",""),
+                        Genus = str_replace(tax[,6], "D_5__",""),
+                        Species = str_replace(tax[,7], "D_6__",""),
+                        stringsAsFactors = FALSE)
+tax.clean[is.na(tax.clean)] <- ""
+
+for (i in 1:7){ tax.clean[,i] <- as.character(tax.clean[,i])}
+tax.clean[is.na(tax.clean)] <- ""
+for (i in 1:nrow(tax.clean)){
+  if (tax.clean[i,2] == ""){
+    kingdom <- paste("Kingdom_", tax.clean[i,1], sep = "")
+    tax.clean[i, 2:7] <- kingdom
+  } else if (tax.clean[i,3] == ""){
+    phylum <- paste("Phylum_", tax.clean[i,2], sep = "")
+    tax.clean[i, 3:7] <- phylum
+  } else if (tax.clean[i,4] == ""){
+    class <- paste("Class_", tax.clean[i,3], sep = "")
+    tax.clean[i, 4:7] <- class
+  } else if (tax.clean[i,5] == ""){
+    order <- paste("Order_", tax.clean[i,4], sep = "")
+    tax.clean[i, 5:7] <- order
+  } else if (tax.clean[i,6] == ""){
+    family <- paste("Family_", tax.clean[i,5], sep = "")
+    tax.clean[i, 6:7] <- family
+  } else if (tax.clean[i,7] == ""){
+    tax.clean$Species[i] <- paste("Genus",tax.clean$Genus[i], sep = "_")
+  }
+}
+
+tax_table(ps.rare) <- as.matrix(tax.clean)
+
+otu_table <- as.data.frame(otu_table(ps.trim.rare))
+taxonomy_table <- as.data.frame(tax_table(ps.trim.rare))
+otu_table_transposed <- as.data.frame(t(otu_table(ps.trim.rare)))
+
+# Align ASVs between the transposed OTU and taxonomy tables
+common_asvs <- intersect(rownames(otu_table_transposed), rownames(taxonomy_table))
+
+otu_table_aligned <- otu_table_transposed[common_asvs, ]
+taxonomy_table_aligned <- taxonomy_table[common_asvs, ]
+otu_with_tax <- cbind(otu_table_aligned, taxonomy_table_aligned)
+
+write.csv(otu_with_tax, file = "Aip_otu_table_with_taxonomy.csv", row.names = TRUE)
+
+```
+
+
+# All ASVs - PCAs
+
+## Rarefied Data
+
+```{r }
+
+ord <- ordinate(ps.rare, "PCoA", "bray")
+library(ggplot2)
+library(phyloseq)
+
+pcoa.treat=plot_ordination(ps.rare, ord, color = "treatment") +
+  geom_point(size = 0.12, alpha = 0.1) +
+  scale_color_manual(values = colvec) +
+  stat_ellipse(aes(group = ps.rare@sam_data$treatment),level=0.80) +
+  theme_classic()
+pcoa.treat
+ggsave(pcoa.treat, filename = "Aip_pcoas.allasvs.rare.pdf", width=3.5, height=2.5, units=c("in"), useDingbats=FALSE)
+
+```
+
+### Rarefied Stats
+
+Help on adonis (here)[https://thebiobucket.blogspot.com/2011/04/assumptions-for-permanova-with-adonis.html#more]
+
+```{r stats rarefied data}
+seq.rare <- data.frame(otu_table(ps.rare))
+
+# make distance matrix with vegdist():
+dist.rare <- vegdist(seq.rare)
+samdf.rare <- data.frame(sample_data(ps.rare))
+row.names(samdf.rare)==row.names(seq.rare)
+
+# Load required libraries
+library(phyloseq)
+library(vegan)  # For the vegdist() function
+
+dist.rare_matrix <- as.matrix(dist.rare)
+
+# Subset the distance matrix for the filtered samples
+filtered_dist_matrix <- dist.rare_matrix[rownames(samdf.rare), rownames(samdf.rare)]
+
+# Create a distance object from the filtered distance matrix
+filtered_dist <- as.dist(filtered_dist_matrix)
+
+# Perform beta dispersion analysis based on 'treatment'
+bet.all <- betadisper(filtered_dist, samdf.rare$treatment)
+plot(bet.all)
+# Perform ANOVA test
+anova_results <- anova(bet.all)
+
+# Print the ANOVA results
+print(anova_results)
+#p=0.01859 *
+adonis2(seq.rare ~ treatment, data=samdf.rare, permutations=2000)
+#      Df SumOfSqs      R2      F  Pr(>F)  
+#treatment  1  0.27458 0.14753 1.3845 0.07446 .
+#Residual   8  1.58665 0.85247                 
+#Total      9  1.86123 1.00000                 
+#---
+adonis2(formula = seq.rare ~ treatment, data = samdf.rare)
+# adonis2(formula = seq.rare ~ treatment, data = samdf.rare)
+#          Df SumOfSqs      R2      F Pr(>F)  
+#treatment  1  0.27458 0.14753 1.3845  0.072 .
+##Residual   8  1.58665 0.85247                
+#Total      9  1.86123 1.00000                
+#---
+#Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+
+```
+```{r}
+library(phyloseq)
+load(file = "ps.trim.Rdata")
+phylo_trim_rel <- transform_sample_counts(ps.trim, function(x) x / sum(x))
+phylo_trim_rel_df <- data.frame(tax_table(ps.trim))
+library(phyloseq)
+library(ggplot2)
+library(RColorBrewer)
+library(plotly)
+
+plot_bar(phylo_trim_rel, x = "sample", fill="Phylum") +
+  geom_bar(stat="identity") +
+  theme_bw() +
+  theme(panel.grid = element_blank(), legend.position = "bottom") +
+  scale_fill_manual(values = rev(colorRampPalette(brewer.pal(8, "Paired"))(28))) +
+  scale_colour_manual(values = rev(colorRampPalette(brewer.pal(8, "Paired"))(28))) +
+  ylab("Relative abundance") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+```{r}
+## Selecting just Phylum Proteobacteria 
+phylo_proteo <- subset_taxa(phylo_trim_rel, Phylum %in% "Proteobacteria")
+phylo_proteo_rel <- transform_sample_counts(phylo_proteo, function(x) x / sum(x))
+
+Proteo<-plot_bar(phylo_proteo_rel, x = "sample", fill = "Order")+
+  geom_bar(stat="identity") +
+  theme_bw() +
+  theme(panel.grid = element_blank(), legend.position = "bottom", legend.key.size = unit(0.3, 'cm')) +
+  scale_fill_manual(values = rev(colorRampPalette(brewer.pal(12, "Paired"))(45))) +
+  scale_colour_manual(values = rev(colorRampPalette(brewer.pal(12, "Paired"))(45))) +
+  ylab("Relative abundance") +
+  ggtitle("Proteobacteria ASVs (relative abundance)")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+Proteo
+ggsave(Proteo, filename = "Aip_Proteo.rare.pdf", width=3.2, height=4.5, units=c("in"), useDingbats=FALSE)
+```
+
+# Core vs. accessory
+
+## Core Microbiome
+
+```{r packages core, echo=FALSE}
+#nBiocManager::install("microbiome")
+#remotes::install_github("r-lib/rlang")
+library(microbiome)
+```
+
+```{r core 15 taxa and 10 samples}
+# prevalence here means what percent of samples does the taxa need to be in to be considered 'core' 
+
+# Transform to compositional abundances
+pseq.rel <- microbiome::transform(phylo_trim_rel, "compositional")
+# Calculate prevalences for all taxonomic groups
+head(prevalence(phylo_trim_rel, detection = 1/100, sort = TRUE))
+
+# Pick the core (>0.1% relative abundance in >50% of the samples)
+pseq.core <- core(phylo_trim_rel, detection = 0.1/100, prevalence = 0.5)
+pseq.core
+#19 taxa and 9 samples
+seq.rare <- data.frame(otu_table(phylo_trim_rel))
+#saving
+core.tax <-data.frame(otu_table(pseq.core))
+# Plot bar plots
+ps_glom <- tax_glom(pseq.core, "Genus")
+ps <- transform_sample_counts(ps_glom, function(x) x / sum(x))
+ps1 <- merge_samples(ps, "sample")
+ps2 <- transform_sample_counts(ps1, function(x) x / sum(x))
+library(RColorBrewer)
+
+
+plot=plot_bar(ps, x = "sample", fill = "Genus")+
+  geom_bar(stat="identity") +
+  theme_bw() +
+  theme(panel.grid = element_blank(), legend.key.size = unit(0.3, 'cm')) +
+  scale_fill_manual(values = rev(colorRampPalette(brewer.pal(8, "Paired"))(39))) +
+  scale_colour_manual(values = rev(colorRampPalette(brewer.pal(8, "Paired"))(39))) +
+  ylab("Relative abundance") +
+  ggtitle("CORE ASVs (relative abundance)")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+plot
+ggsave(plot, file="Aip_core_rare.bar_1.pdf",width=6, height=2.9, units=c("in"), useDingbats=FALSE)
+
+# Core Bray-Curtis PCoAs
+#not rel abun
+plot.core=plot_ordination(pseq.core,ordinate(pseq.core,"PCoA", "bray"),color="treatment")+
+  stat_ellipse(level=0.80)+
+  theme_classic()+scale_color_manual(values = colvec) 
+  
+  #                   values=cols_site_diverging,
+  #                   breaks = c("Control","Nitrate","Heat","Heat+Nitrate"))+
+  #scale_shape_manual(name = "state", 
+  #                   values=c(15,24),
+  #                   breaks = c("apo","sym"))
+plot.core
+ggsave(plot.core, file="Aip_core_pca.pdf",width=4,height = 4)
+
+seq.core <- data.frame(otu_table(pseq.core))
+samdf.core <- data.frame(sample_data(pseq.core))
+row.names(samdf.core)==row.names(seq.core)
+#rel abundance
+pseq.core.rel <- transform_sample_counts(pseq.core, function(x) x / sum(x))
+# pcoa's 
+plot.core.rel = plot_ordination(pseq.core.rel,ordinate(pseq.core.rel,"PCoA", "bray"),color="treatment")+
+  stat_ellipse(level=0.75)+
+theme_classic()+scale_color_manual(values = colvec)
+plot.core.rel
+adonis2(core.tax ~ treatment, data=samdf.core, permutations=999)
+#Df SumOfSqs      R2      F Pr(>F)
+#treatment  1  0.21436 0.14923 1.4033  0.146
+#Residual   8  1.22207 0.85077              
+#Total      9  1.43643 1.00000       
+
+#Signif. codes:  0 ‘***’ 0.001 ‘**’ 0.01 ‘*’ 0.05 ‘.’ 0.1 ‘ ’ 1
+adonis2(formula = core.tax ~ treatment, data = samdf.core, permutations = 999)
+ggsave(plot.core.rel, filename = "Aip_pcoas.core.rel.rare.pdf", width=4, height = 3, units=c("in"), useDingbats=FALSE)
+```
+
+```{r}
+# Assuming 'ps' is your phyloseq object
+# Transform the counts to relative abundance
+ps_rel <- transform_sample_counts(ps, function(x) x / sum(x))
+
+# Extract data for plotting
+ps_df <- psmelt(ps_rel)
+
+ps_df$Phylum <- factor(ps_df$Phylum, levels = rev(names(sort(tapply(ps_df$Abundance, ps_df$Phylum, sum)))))
+# Bubble plot
+BUB_core <- ggplot(ps_df, aes(x = Sample, y = Class, size = Abundance, color =Phylum)) +
+  geom_point(alpha = 1) +  # Add bubbles with some transparency
+  theme_bw() +  # Use a clean white background
+  theme(panel.grid = element_blank(),  # Remove grid lines
+        legend.key.size = unit(0.4, 'cm'),  # Adjust legend key size
+        axis.text.x = element_text(angle = 45, hjust = 1)) +  # Rotate x-axis labels for better readability
+  scale_color_manual(values = rev(colorRampPalette(brewer.pal(8, "Paired"))(14))) +  # Set custom colors for the 'Genus'
+  scale_size_continuous(range = c(1,9), name = "Relative Abundance") +  # Adjust bubble size range
+  labs(y = "Class", x = "Sample", title = "CORE ASVs (Relative Abundance)")  # Set labels and title
+
+# Print the plot
+BUB_core
+ggsave(BUB_core, file="Aip_core_rare.bar_1_BOB_ord.pdf",width=5.5,height = 3.4)
+
+```
+
+
+
+```{r calculate core abundance}
+# calculating core abundances #
+library(vctrs)
+library(dplyr)
+library(dplyr)
+library(tidyselect)
+core.sqs<- tax_table(pseq.core)
+core.sqs.ids= row.names(core.sqs)
+library(dplyr)
+core.sqs.ids
+# Assuming seq_rare_rel is your data frame or tibble
+core_sqs_ids <- c("sq1","sq2","sq3","sq4","sq5","sq9","sq10","sq12","sq14","sq15","sq18","sq21","sq22","sq23","sq24","sq25","sq27","sq29","sq30","sq32","sq33","sq36","sq38","sq39","sq43","sq44","sq45","sq48","sq52","sq54","sq58","sq60","sq61","sq62","sq66","sq70","sq72","sq77","sq79","sq80","sq82","sq89" ,"sq99","sq105")
+
+```
+
+### Core stats
+
+```{r core stats Lineages together}
+seq.core <- data.frame(otu_table(pseq.core))
+
+dist.core <- vegdist(seq.core)
+samdf.core <- data.frame(sample_data(pseq.core))
+row.names(samdf.core)==row.names(seq.core)
+
+# site
+bet.all <- betadisper(dist.core,samdf.core$treatment)
+anova(bet.all) # 0.05805 .
+permutest(bet.all, pairwise = TRUE, permutations = 999)
+      
+#Df   Sum Sq   Mean Sq      F N.Perm Pr(>F)
+#Groups     1 0.021791 0.0217906 2.8006    999   0.12
+#Residuals  8 0.062247 0.0077808 
+
+```
+
+## Accessory
+
+```{r accessory lineages together}
+# not doing prestress data here because we only have 4 taxa for prestress data
+ps.rare.otu <- data.frame(phylo_trim_rel@otu_table)
+core.tax <- data.frame(pseq.core@tax_table)
+core.ids <- c(rownames(core.tax))
+ps.rare.acc.otu <- ps.rare.otu[,!colnames(ps.rare.otu) %in% core.ids ]
+row.names(samdf.core) <- samdf.core$sample
+
+#remake phyloseq object
+ps.acc <- phyloseq(otu_table(ps.rare.acc.otu, taxa_are_rows=FALSE), 
+                         sample_data(samdf.core), 
+                         tax_table(taxa2))
+ps.acc #397 taxa and 10 samples
+
+
+# make bray-curtis dissimilarity pcoas for accessory microbiome
+
+pcoa.acc.all=plot_ordination(ps.acc,ordinate(ps.acc,"PCoA", "bray"), color = "treatment") +
+  geom_point(size = 2.5, alpha = 0.8) +
+  scale_color_manual(values = colvec) +
+  stat_ellipse(level = 0.90) +
+  theme_classic()
+pcoa.acc.all
+
+ggsave(pcoa.acc.all, filename = "Aip_pcoas.accesory.rel.rare.pdf", width=4, height = 3, units=c("in"), useDingbats=FALSE)
+#rel abundance
+pseq.acc.rel <- transform_sample_counts(ps.acc, function(x) x / sum(x))
+
+```
+
+
+
+```{r stats acc 85 taxa and 10 samples}
+seq.acc <- data.frame(otu_table(ps.acc))
+
+dist.acc <- vegdist(seq.acc)
+samdf.acc <- data.frame(sample_data(ps.acc))
+row.names(samdf.acc)==row.names(seq.acc)
+
+#sitename
+bet.all <- betadisper(dist.acc,samdf.acc$treatment)
+anova(bet.all) #p=0.01859
+#Df   Sum Sq   Mean Sq F value Pr(>F)
+#Groups     1 0.007532 0.0075325  1.4303  0.266
+#Residuals  8 0.042131 0.0052664 
+#permutest(bet.all, pairwise = TRUE, permutations = 999) 
+#plot(bet.all) 
+#Df   Sum Sq  Mean Sq      F N.Perm Pr(>F)   
+#Groups     1 0.052254 0.052254 8.6691    999  0.009 **
+#Residuals  8 0.048221 0.006028
+adonis2(seq.acc ~ treatment, data=samdf.acc, permutations=999) 
+#  Df SumOfSqs      R2      F Pr(>F)
+#treatment  1   0.4595 0.12431 1.1356  0.159
+#Residual   8   3.2369 0.87569              
+#Total      9   3.6964 1.00000          
+```
+
+
+
+## Accessory Summary
+
+# Bar plots {.tabset}
+```{r}
+# Pick the core (>0.1% relative abundance in >50% of the samples)
+
+seq.acc <- data.frame(otu_table(ps.acc))
+# Plot bar plots
+
+
+# Transform to compositional abundances
+pseq.acc <- microbiome::transform(ps.acc, "compositional")
+# Calculate prevalences for all taxonomic groups
+head(prevalence(ps.rare, detection = 1/100, sort = TRUE))
+
+#15 taxa and 10 samples
+seq.acc <- data.frame(otu_table(pseq.acc))
+# Plot bar plots
+ps_glom <- tax_glom(ps.acc, "Genus")
+ps <- transform_sample_counts(ps_glom, function(x) x / sum(x))
+ps1 <- merge_samples(ps, "sample")
+ps2 <- transform_sample_counts(ps1, function(x) x / sum(x))
+library(RColorBrewer)
+
+
+ps_glom_1 <- tax_glom(seq.acc, "Genus")
+ps <- transform_sample_counts(ps_glom, function(x) x / sum(x))
+ps1 <- merge_samples(ps, "sample")
+
+ps2 <- transform_sample_counts(ps1, function(x) x / sum(x))
+library(RColorBrewer)
+
+plot=plot_bar(ps, x = "sample", fill = "Genus")+
+  geom_bar(stat="identity") +
+  theme_bw() +
+  theme(panel.grid = element_blank(), legend.key.size = unit(0.3, 'cm')) +
+  scale_fill_manual(values = rev(colorRampPalette(brewer.pal(8, "Paired"))(197))) +
+  scale_colour_manual(values = rev(colorRampPalette(brewer.pal(8, "Paired"))(197))) +
+  ylab("Relative abundance") +
+  ggtitle("Accessory ASVs (relative abundance)")+theme(axis.text.x = element_text(angle = 45, hjust = 1))
+plot
+ggsave(plot, file="Aip_acc_rare.bar_1.pdf",width=21, height=2.9, units=c("in"), useDingbats=FALSE)
+```
+
+```{r}
+# Assuming ps is your phyloseq object
+# Transform the counts to relative abundance
+ps_rel <- transform_sample_counts(ps, function(x) x / sum(x))
+
+# Extract data for plotting
+ps_df <- psmelt(ps_rel)
+
+# Convert `Genus` to a factor with the desired order
+ps_df$Genus <- factor(ps_df$Genus, levels = rev(names(sort(tapply(ps_df$Abundance, ps_df$Genus, sum)))))
+
+```
+
+```{r}
+# Bubble plot
+BUB<-ggplot(ps_df, aes(x = sample, y = Genus, size = Abundance, color = Genus)) +
+  geom_point(alpha = 0.7) +
+  theme_bw() +
+  theme(panel.grid = element_blank(), legend.key.size = unit(0.3, 'cm')) +
+  scale_color_manual(values = rev(colorRampPalette(brewer.pal(8, "Paired"))(length(unique(ps_df$Genus))))) +
+  scale_size_continuous(range = c(1, 10), name = "Relative Abundance") +
+  labs(y = "Genus", x = "Sample", title = "Accessory ASVs (Relative Abundance)") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Optional: Rotate x-axis labels for better readability
+BUB
+ggsave(BUB, file="Aip_acc_rare.bar_1_BOB.pdf",width=14)
+```
+
+
+
+## Summary
+
+- No differences in results between relative abundance & rarefied plots/stats
+- Pairwise adonis significant between control treatment and all other variability treatments
+- No lineage effects to suggest cryptic lineages host different microbiomes
+- Beta dispersion not significantly different 
+
+
+# Pgylosq Deseq
+#Detect differentially abundant taxa
+
+Tutorial [here](https://joey711.github.io/phyloseq-extensions/DESeq2.html)
+
+## Setup
+```{r}
+library("DESeq2")#‘1.44.0’
+packageVersion("DESeq2")
+```
+```{r}
+ps.cleanest = readRDS("phyloseq.cleanest.all.rds")
+diagdds = phyloseq_to_deseq2(ps.cleanest, ~ treatment)
+diagdds = DESeq(diagdds, test="Wald", fitType="parametric")
+```
+```{r}
+#calculate foldchange. We put the experimental first and control second. 
+# Extract results for Antibiotic vs Control
+res <- results(diagdds, contrast = c("treatment", "Antibiotic", "Control"))
+
+# Inspect the results
+head(res)
+
+# Save results to a dataframe for further analysis or plotting
+res<- as.data.frame(res)
+res = res[order(res$pvalue, na.last=NA), ]
+sigtab05 = res[(res$padj < 0.1), ]
+dim(sigtab05)
+sigtab05
+write.csv(sigtab05, "/projectnb/coral/jk_data/proj4_Regeneration/1_Raw_reads/Aip/Aip_diff_sig.csv", row.names = TRUE)
+```
+
+```{r}
+#Export this to use as a table (for supplementary)
+sigtab05 = cbind(as(sigtab05, "data.frame"), as(tax_table(ps.clean)[rownames(sigtab05), ], "matrix"))
+#First, asting the factors to characters so they can be replaced..
+sigtab05$Genus <-as.character(sigtab05$Genus)
+sigtab05
+```
+
+```{r}
+#Define our discrete palette
+#scale_fill_discrete <- function(palname = "Set1", ...) {
+#scale_fill_brewer(palette = palname, ...)
+#}
+#Sort our table
+x = tapply(sigtab05$log2FoldChange, sigtab05$Phylum, function(x) max(x))
+x = sort(x, TRUE)
+#Cast as factors
+sigtab05$Phylum = factor(as.character(sigtab05$Phylum), levels=names(x))
+#Same for genus
+x = tapply(sigtab05$log2FoldChange, sigtab05$Genus, function(x) max(x))
+x = sort(x, TRUE)
+sigtab05$Genus = factor(as.character(sigtab05$Genus), levels=names(x))
+#Count how many NAs increase and decrease in abundance, make a note of it and them omit them for plotting. 
+sigtab05pos = sigtab05[(sigtab05$log2FoldChange >=0),]
+pos.row.has.na <- apply(sigtab05pos, 1, function(x){any(is.na(x))})
+sum(pos.row.has.na)
+```
+```{r}
+sigtab05neg = sigtab05[(sigtab05$log2FoldChange <=0),]
+neg.row.has.na <- apply(sigtab05neg, 1, function(x){any(is.na(x))})
+sum(neg.row.has.na)
+```
+
+```{r}
+#Filter these NAs fro mthe table we will use for plotting..
+row.has.na <- apply(sigtab05, 1, function(x){any(is.na(x))})
+sigtab05.filtered <- sigtab05[!row.has.na,]
+sigtab05.filtered
+```
+
+```{r}
+library(ggplot2)
+library(RColorBrewer)
+
+# Assuming `sigtab05.filtered` is your data frame
+de <- ggplot(sigtab05.filtered, aes(x=Genus, y=log2FoldChange, fill=Phylum)) + 
+  geom_jitter(size=3, shape=21, width = 0.3) + 
+  theme(axis.text.x = element_text(angle = -90, hjust = 0, vjust=0.5), 
+        panel.grid.minor = element_blank()) + 
+  ylab("log2FoldChange") + 
+  theme_classic()+
+  scale_fill_manual(values=brewer.pal(n = length(unique(sigtab05.filtered$Phylum)), name = "Set1")) + 
+  scale_color_manual(values=brewer.pal(n = length(unique(sigtab05.filtered$Phylum)), name = "Set1"))+coord_flip()
+
+# Additional customization for fill colors using scale_fill_hue
+de# + scale_fill_hue(l=80, c=150)
+ggsave(de, filename = "Aip_DF.pdf", width=5, height=2.5, units=c("in"), useDingbats=FALSE)
+```
+```{r}
+# Assuming your phyloseq object is named `physeq`
+dds <- phyloseq_to_deseq2(ps.cleanest, ~ treatment) # Replace `condition` with your experimental condition
+dds <- DESeq(dds)
+res <- results(dds)
+res <- res[!is.na(res$padj) & res$padj < 0.05, ] # Adjust the p-value threshold as needed
+res <- as.data.frame(res)
+counts_df <- as.data.frame(counts(dds, normalized=FALSE)) %>% 
+  rownames_to_column("OTU")
+
+filtered_counts <- counts_df %>% 
+  filter(OTU == "sq28")
+filtered_counts_long <- filtered_counts %>%
+  pivot_longer(cols = -OTU, names_to = "Sample", values_to = "Count")
+filtered_counts_long
+ggplot(filtered_counts_long, aes(x = Sample, y = Count)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.2, size = 2, alpha = 0.6) +  # Adds individual points
+  theme_classic() +
+  xlab("Sample") +
+  ylab("Count") +
+  ggtitle("Boxplot of Counts for OTU 'sq28'")
+
+counts_df <- counts_df %>% rownames_to_column("OTU")
+res_df <- as.data.frame(res)
+if ("OTU" %in% colnames(res_df)) {
+  res_df <- res_df %>% rename(DESeq_OTU = OTU)
+}
+res_df <- res_df %>% rownames_to_column("OTU")
+
+# Extract taxonomy table from phyloseq
+tax_table <- as.data.frame(tax_table(ps.cleanest)) %>% 
+  rownames_to_column("OTU")
+tax_table
+counts_df
+# Merge DESeq2 results with taxonomy
+res_tax <- as.data.frame(res) %>%
+  rownames_to_column("OTU") %>%
+  inner_join(tax_table, by = "OTU")
+
+# Merge with counts
+res_tax_counts <- inner_join(res_tax, counts_df, by = "OTU")
+
+```
